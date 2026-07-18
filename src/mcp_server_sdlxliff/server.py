@@ -20,8 +20,12 @@ import logging
 from .cache import (
     get_parser,
     clear_parser_cache,
+    resolve_file_path,
     validate_file_extension,
 )
+from .parser import SDLXLIFFParser
+from . import versioning
+from .versioning import VersioningError
 from .qa import (
     run_qa_checks,
     QAReport,
@@ -222,7 +226,10 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Save changes made to an SDLXLIFF file. All modifications from "
                 "update_sdlxliff_segment are kept in memory until this tool is called. "
-                "Can optionally save to a different file path."
+                "Can optionally save to a different file path. "
+                "A snapshot of the file is kept automatically on every save, so any "
+                "earlier state can be reviewed or brought back later "
+                "(see list_file_history, diff_versions, restore_version)."
             ),
             inputSchema={
                 "type": "object",
@@ -388,7 +395,136 @@ async def list_tools() -> list[Tool]:
                 "required": ["file_path"],
             },
         ),
+        Tool(
+            name="list_file_history",
+            description=(
+                "Show the saved versions of an SDLXLIFF file. A snapshot is kept "
+                "automatically every time the file is saved, so earlier states can "
+                "always be reviewed or brought back - nothing is ever lost. "
+                "Returns a dated list of versions (oldest first) with a summary of "
+                "what changed in each. All history stays on this computer only. "
+                "Use for: 'show the history of this file', 'what versions are there', "
+                "'when was this file last saved'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the SDLXLIFF file",
+                    },
+                },
+                "required": ["file_path"],
+            },
+        ),
+        Tool(
+            name="diff_versions",
+            description=(
+                "Compare a saved version of an SDLXLIFF file with its current "
+                "content, translation by translation. For each changed segment, "
+                "shows the segment ID, the translation as it was in that version, "
+                "and the translation as it is now (readable text, not raw XML). "
+                "Use list_file_history first to see the available version numbers. "
+                "Use for: 'what changed since version 2', 'what did my last save "
+                "change', 'review my edits'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the SDLXLIFF file",
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": (
+                            "Version number to compare against the current file "
+                            "(from list_file_history; 1 is the oldest)"
+                        ),
+                    },
+                },
+                "required": ["file_path", "version"],
+            },
+        ),
+        Tool(
+            name="restore_version",
+            description=(
+                "Bring back an earlier version of an SDLXLIFF file, replacing its "
+                "current content in one step. The current state is snapshotted "
+                "first, so a restore can itself be undone the same way - nothing is "
+                "ever lost. To undo the most recent save, restore the version just "
+                "before it (see list_file_history). "
+                "Use for: 'undo my last save', 'go back to yesterday's version', "
+                "'restore version 3'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the SDLXLIFF file",
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": (
+                            "Version number to restore "
+                            "(from list_file_history; 1 is the oldest)"
+                        ),
+                    },
+                },
+                "required": ["file_path", "version"],
+            },
+        ),
     ]
+
+
+def _language_pair_suffix(metadata: dict) -> str:
+    """Build a language-pair suffix like ' (EN→FR)' from file metadata."""
+    source = metadata.get('source_language')
+    target = metadata.get('target_language')
+    if not source or not target:
+        return ""
+    return f" ({source.split('-')[0].upper()}→{target.split('-')[0].upper()})"
+
+
+def _diff_segment_lists(old_segments: list, new_segments: list) -> list:
+    """
+    Compute a segment-level diff between two versions of a file.
+
+    Returns a list of {segment_id, old_target, new_target} for every segment
+    whose target text differs, in current-file order.
+    """
+    old_map = {seg['segment_id']: seg for seg in old_segments}
+    new_ids = set()
+    changes = []
+
+    for seg in new_segments:
+        seg_id = seg['segment_id']
+        new_ids.add(seg_id)
+        old_seg = old_map.get(seg_id)
+        if old_seg is None:
+            changes.append({
+                'segment_id': seg_id,
+                'old_target': None,
+                'new_target': seg.get('target', ''),
+            })
+        elif old_seg.get('target', '') != seg.get('target', ''):
+            changes.append({
+                'segment_id': seg_id,
+                'old_target': old_seg.get('target', ''),
+                'new_target': seg.get('target', ''),
+            })
+
+    # Segments that existed in the old version but are gone now (rare)
+    for seg in old_segments:
+        if seg['segment_id'] not in new_ids:
+            changes.append({
+                'segment_id': seg['segment_id'],
+                'old_target': seg.get('target', ''),
+                'new_target': None,
+            })
+
+    return changes
 
 
 @app.call_tool()
@@ -536,16 +672,122 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 validate_file_extension(output_path)
 
             parser = get_parser(file_path)
+            n_modified = len(parser.modified_segment_ids)
+            lang_suffix = _language_pair_suffix(parser.get_file_metadata())
+
+            save_location = Path(output_path).resolve() if output_path else parser.file_path
+            history_warnings = []
+
+            # Snapshot the file's current on-disk state before overwriting it
+            warning = versioning.ensure_baseline(save_location)
+            if warning:
+                history_warnings.append(warning)
+
             parser.save(output_path)
+
+            # Snapshot the newly saved state
+            seg_word = "segment" if n_modified == 1 else "segments"
+            warning = versioning.record_save(
+                save_location,
+                f"Updated {n_modified} {seg_word} in {save_location.name}{lang_suffix}",
+            )
+            if warning:
+                history_warnings.append(warning)
 
             # Clear cache after saving
             clear_parser_cache(file_path)
 
-            save_location = output_path if output_path else file_path
+            message = f"Successfully saved SDLXLIFF file to: {save_location}"
+            if history_warnings:
+                message += "\nNote: " + " ".join(history_warnings)
+            else:
+                message += "\nA snapshot of this version was kept automatically (see list_file_history)."
             return [
                 TextContent(
                     type="text",
-                    text=f"Successfully saved SDLXLIFF file to: {save_location}",
+                    text=message,
+                )
+            ]
+
+        elif name == "list_file_history":
+            file_path = str(resolve_file_path(arguments["file_path"]))
+
+            try:
+                versions = versioning.get_history(Path(file_path))
+            except VersioningError as e:
+                return [TextContent(type="text", text=str(e))]
+
+            response = {
+                "file": file_path,
+                "versions": [
+                    {
+                        "version": v.number,
+                        "date": v.date,
+                        "description": v.description,
+                    }
+                    for v in versions
+                ],
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(response, indent=2, ensure_ascii=False),
+                )
+            ]
+
+        elif name == "diff_versions":
+            file_path = str(resolve_file_path(arguments["file_path"]))
+            version = arguments["version"]
+
+            try:
+                versions = versioning.get_history(Path(file_path))
+                old_content = versioning.get_version_content(Path(file_path), version)
+            except VersioningError as e:
+                return [TextContent(type="text", text=str(e))]
+
+            version_info = next(v for v in versions if v.number == version)
+            old_parser = SDLXLIFFParser.from_bytes(old_content, name=file_path)
+            old_segments = old_parser.extract_segments()
+            new_segments = get_parser(file_path).extract_segments()
+
+            changes = _diff_segment_lists(old_segments, new_segments)
+
+            response = {
+                "file": file_path,
+                "compared_to_version": version,
+                "version_date": version_info.date,
+                "version_description": version_info.description,
+                "segments_changed": len(changes),
+                "changes": changes,
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(response, indent=2, ensure_ascii=False),
+                )
+            ]
+
+        elif name == "restore_version":
+            file_path = str(resolve_file_path(arguments["file_path"]))
+            version = arguments["version"]
+
+            try:
+                restored = versioning.restore_version(Path(file_path), version)
+            except VersioningError as e:
+                return [TextContent(type="text", text=str(e))]
+
+            # The file on disk changed; drop any cached parser
+            clear_parser_cache(file_path)
+
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Restored {Path(file_path).name} to version {restored.number} "
+                        f"from {restored.date} ({restored.description}). "
+                        f"The previous state was kept as a new version, so this "
+                        f"can be undone with restore_version if needed."
+                    ),
                 )
             ]
 

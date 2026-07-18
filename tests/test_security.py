@@ -426,10 +426,10 @@ class TestParserSecurityConfig:
 
 
 class TestAtomicWrites:
-    """Tests for atomic write and backup functionality."""
+    """Tests for atomic write functionality."""
 
-    def test_save_creates_backup(self):
-        """Test that save creates a .bak backup file when overwriting."""
+    def test_save_creates_no_backup_file(self):
+        """Test that save never writes a .bak file (version history replaced it)."""
         with tempfile.NamedTemporaryFile(mode='w', suffix='.sdlxliff', delete=False) as f:
             f.write(VALID_SDLXLIFF)
             temp_path = f.name
@@ -439,34 +439,9 @@ class TestAtomicWrites:
         try:
             parser = SDLXLIFFParser(temp_path)
             parser.update_segment('1', 'Updated text')
-            parser.save()  # Save with default create_backup=True
+            parser.save()
 
-            # Verify backup was created
-            assert Path(backup_path).exists(), "Backup file should be created"
-
-            # Verify backup contains original content
-            with open(backup_path, 'rb') as f:
-                backup_content = f.read()
-            assert b'Hello' in backup_content  # Original target text
-        finally:
-            Path(temp_path).unlink(missing_ok=True)
-            Path(backup_path).unlink(missing_ok=True)
-
-    def test_save_no_backup_when_disabled(self):
-        """Test that save doesn't create backup when create_backup=False."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.sdlxliff', delete=False) as f:
-            f.write(VALID_SDLXLIFF)
-            temp_path = f.name
-
-        backup_path = temp_path + '.bak'
-
-        try:
-            parser = SDLXLIFFParser(temp_path)
-            parser.update_segment('1', 'Updated text')
-            parser.save(create_backup=False)
-
-            # Verify backup was NOT created
-            assert not Path(backup_path).exists(), "Backup file should not be created"
+            assert not Path(backup_path).exists(), "No .bak file should be created"
         finally:
             Path(temp_path).unlink(missing_ok=True)
             Path(backup_path).unlink(missing_ok=True)
@@ -485,7 +460,7 @@ class TestAtomicWrites:
 
             parser = SDLXLIFFParser(temp_path)
             parser.update_segment('1', 'Updated text')
-            parser.save(create_backup=False)
+            parser.save()
 
             # Count temp files after
             temp_files_after = list(temp_dir.glob('.sdlxliff_*.tmp'))
@@ -505,7 +480,7 @@ class TestAtomicWrites:
         try:
             parser = SDLXLIFFParser(temp_path)
             parser.update_segment('1', 'New translated text')
-            parser.save(create_backup=False)
+            parser.save()
 
             # Re-read the file and verify content
             parser2 = SDLXLIFFParser(temp_path)

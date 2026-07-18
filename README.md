@@ -74,6 +74,7 @@ Then add to your `claude_desktop_config.json`:
 - **Safe corrections** - Edit translations while preserving all formatting tags
 - **Batch review** - Process large files with automatic pagination
 - **Change tracking** - Modified segments are marked as `RejectedTranslation` for easy review in Trados
+- **Invisible version history** - Every save keeps a local snapshot automatically; review what changed or undo a save at any time. History is stored in a hidden folder next to your files and **never leaves your machine** (no remotes, no uploads - pure-Python [dulwich](https://www.dulwich.io/), no git installation required)
 
 ## Human in the Loop
 
@@ -158,11 +159,34 @@ Pre-validate proposed changes to a segment before updating.
 
 ### `save_sdlxliff`
 
-Save changes to the SDLXLIFF file.
+Save changes to the SDLXLIFF file. A snapshot of the file is kept automatically on every save (see version history tools below).
 
 **Parameters:**
 - `file_path` (string, required): Path to the SDLXLIFF file
 - `output_path` (string, optional): Alternative output path (default: overwrites original)
+
+### `list_file_history`
+
+Show the saved versions of a file - a dated list (oldest first, version 1 = original) with a summary of what changed in each. History is recorded automatically on every save and stays on the local machine only.
+
+**Parameters:**
+- `file_path` (string, required): Path to the SDLXLIFF file
+
+### `diff_versions`
+
+Compare a saved version with the file's current content, segment by segment. Returns `segment_id`, `old_target`, and `new_target` for every changed segment (readable text, not raw XML).
+
+**Parameters:**
+- `file_path` (string, required): Path to the SDLXLIFF file
+- `version` (integer, required): Version number from `list_file_history`
+
+### `restore_version`
+
+Bring back an earlier version of the file in one step ("undo my last save"). The current state is snapshotted first, so a restore can itself be undone.
+
+**Parameters:**
+- `file_path` (string, required): Path to the SDLXLIFF file
+- `version` (integer, required): Version number from `list_file_history`
 
 ### `get_sdlxliff_statistics`
 

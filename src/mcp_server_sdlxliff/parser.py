@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from lxml import etree
 
 from .constants import DEFAULT_NAMESPACES, MAX_FILE_SIZE, MAX_SEGMENT_TEXT_SIZE
-from .io import load_sdlxliff, save_sdlxliff
+from .io import create_secure_parser, load_sdlxliff, save_sdlxliff
 from .tags import (
     build_mrk_with_tags,
     extract_content_with_tags,
@@ -50,9 +50,45 @@ class SDLXLIFFParser:
         self._sdl_seg_index: Dict[str, etree._Element] = {}
         # Repetition index: maps (tu_id, seg_id) -> count of repetitions
         self._repetition_counts: Dict[Tuple[str, str], int] = {}
+        # Segment IDs modified since load (used for save commit messages)
+        self.modified_segment_ids: set = set()
         self._load_file()
         self._build_segment_index()
         self._build_repetition_index()
+
+    @classmethod
+    def from_bytes(cls, content: bytes, name: str = "<memory>") -> "SDLXLIFFParser":
+        """
+        Create a parser from in-memory SDLXLIFF content (e.g., a saved version).
+
+        Args:
+            content: Raw file bytes (UTF-8, BOM allowed)
+            name: Display name for the content (used in errors only)
+
+        Returns:
+            SDLXLIFFParser instance backed by the in-memory content
+        """
+        if len(content) > MAX_FILE_SIZE:
+            raise ValueError(
+                f"Content too large: {len(content) / (1024*1024):.1f}MB "
+                f"(max: {MAX_FILE_SIZE / (1024*1024):.0f}MB)"
+            )
+
+        self = cls.__new__(cls)
+        self.file_path = Path(name)
+        self.namespaces = dict(DEFAULT_NAMESPACES)
+        self._original_mrk_elements = {}
+        self._segment_index = {}
+        self._sdl_seg_index = {}
+        self._repetition_counts = {}
+        self.modified_segment_ids = set()
+
+        self.root = etree.fromstring(content, create_secure_parser())
+        self.tree = self.root.getroottree()
+        self._update_namespaces()
+        self._build_segment_index()
+        self._build_repetition_index()
+        return self
 
     def _load_file(self):
         """Load and parse the SDLXLIFF file."""
@@ -463,6 +499,7 @@ class SDLXLIFFParser:
         if sdl_seg is not None:
             sdl_seg.set('conf', 'RejectedTranslation')
 
+        self.modified_segment_ids.add(segment_id)
         return True
 
     def set_segment_status(self, segment_id: str, status: str = 'RejectedTranslation') -> bool:
@@ -619,20 +656,23 @@ class SDLXLIFFParser:
         if sdl_seg is not None:
             sdl_seg.set('conf', 'RejectedTranslation')
 
+        self.modified_segment_ids.add(segment_id)
         result['success'] = True
         result['message'] = f"Successfully updated segment '{segment_id}'"
         return result
 
-    def save(self, output_path: Optional[str] = None, create_backup: bool = True):
+    def save(self, output_path: Optional[str] = None):
         """
         Save the modified SDLXLIFF file using atomic write.
 
+        Version history (see versioning.py) replaces the old .bak backup
+        mechanism, so no backup file is written.
+
         Args:
             output_path: Optional output path. If None, overwrites the original file.
-            create_backup: If True and overwriting existing file, create .bak backup.
         """
         out_path = Path(output_path) if output_path else self.file_path
-        save_sdlxliff(self.root, out_path, self.file_path, create_backup)
+        save_sdlxliff(self.root, out_path, self.file_path)
 
     def get_segment_by_id(self, segment_id: str) -> Optional[Dict[str, Any]]:
         """

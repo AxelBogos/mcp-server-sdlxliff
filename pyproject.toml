@@ -31,6 +31,7 @@ classifiers = [
     "Topic :: Text Processing :: Linguistic",
 ]
 dependencies = [
+    "dulwich>=1.2.11",
     "lxml>=5.0.0",
     "mcp>=1.0.0",
     "pyspellchecker>=0.8.0",

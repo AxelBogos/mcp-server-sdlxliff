@@ -6,7 +6,6 @@ Handles loading, saving, atomic writes, and BOM preservation.
 
 import logging
 import os
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Tuple
@@ -87,14 +86,14 @@ def save_sdlxliff(
     root: etree._Element,
     output_path: Path,
     original_path: Path,
-    create_backup: bool = True
 ) -> None:
     """
     Save an SDLXLIFF file using atomic write pattern.
 
     Uses atomic write pattern (write to temp file, then rename) to prevent
-    file corruption if the process crashes during write. Optionally creates
-    a backup of the original file before overwriting.
+    file corruption if the process crashes during write. Previous file
+    states are preserved by the version history (versioning.py), so no
+    .bak backup file is created.
 
     Preserves:
     - UTF-8 BOM if present in original
@@ -104,7 +103,6 @@ def save_sdlxliff(
         root: The root XML element to save
         output_path: Where to save the file
         original_path: Original file path (for BOM detection)
-        create_backup: If True and overwriting existing file, create .bak backup
 
     Raises:
         IOError: If file cannot be written
@@ -139,12 +137,6 @@ def save_sdlxliff(
         os.write(temp_fd, content_bytes)
         os.close(temp_fd)
         temp_fd = None  # Mark as closed
-
-        # Create backup if overwriting existing file
-        if create_backup and output_path.exists():
-            backup_path = output_path.with_suffix(output_path.suffix + '.bak')
-            shutil.copy2(str(output_path), str(backup_path))
-            logger.debug(f"Created backup: {backup_path}")
 
         # Atomic rename (on same filesystem, this is atomic on POSIX)
         os.replace(temp_path, str(output_path))

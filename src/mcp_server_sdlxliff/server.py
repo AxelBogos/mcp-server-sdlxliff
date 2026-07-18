@@ -305,7 +305,10 @@ async def list_tools() -> list[Tool]:
                 "Default checks: trailing punctuation mismatches, missing/extra numbers, "
                 "double spaces, whitespace mismatches, bracket mismatches, "
                 "inconsistent repetitions (same source text translated differently), "
-                "and terminology (glossary compliance). "
+                "terminology (glossary compliance), and french_typography (only when the "
+                "file's target language is French: non-breaking spaces before : ; ! ?, "
+                "« guillemets » instead of English quotes, French number formatting like "
+                "1 234,56; FR-FR vs FR-CA conventions via french_convention parameter). "
                 "OPT-IN checks: spelling (must be explicitly requested via checks parameter). "
                 "Spelling uses target language from file metadata; supports: en, de, es, fr, it, pt, nl (offline dictionaries, no network). "
                 "For terminology check: auto-discovers glossary.tsv/txt in same folder as SDLXLIFF, "
@@ -344,6 +347,7 @@ async def list_tools() -> list[Tool]:
                                 "brackets",
                                 "inconsistent_repetitions",
                                 "terminology",
+                                "french_typography",
                                 "spelling",
                             ],
                         },
@@ -351,8 +355,22 @@ async def list_tools() -> list[Tool]:
                             "Optional list of specific checks to run. "
                             "If not provided, runs default checks (all except spelling). "
                             "Spelling is OPT-IN: must be explicitly listed to run. "
+                            "french_typography runs only when the file's target language is French. "
                             "Available: trailing_punctuation, numbers, double_spaces, "
-                            "whitespace, brackets, inconsistent_repetitions, terminology, spelling."
+                            "whitespace, brackets, inconsistent_repetitions, terminology, "
+                            "french_typography, spelling."
+                        ),
+                    },
+                    "french_convention": {
+                        "type": "string",
+                        "enum": ["fr-FR", "fr-CA"],
+                        "description": (
+                            "Typography convention for the french_typography check. "
+                            "fr-FR (France): non-breaking space before : ; ! ?. "
+                            "fr-CA (Canada/OQLF): non-breaking space before : only; "
+                            "no space before ; ! ?. "
+                            "Default: derived from the file's target language "
+                            "(fr-CA target uses Canadian rules, other French uses fr-FR)."
                         ),
                     },
                     "glossary_path": {
@@ -830,6 +848,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             checks = arguments.get("checks")
             glossary_path = arguments.get("glossary_path")
             dictionary_path = arguments.get("dictionary_path")
+            french_convention = arguments.get("french_convention")
             max_percent = arguments.get("max_percent")
             skip_cm = arguments.get("skip_cm", False)
 
@@ -909,6 +928,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 glossary_terms,
                 target_lang=target_lang,
                 custom_words=custom_words,
+                french_convention=french_convention,
             )
 
             # Convert to JSON-serializable format

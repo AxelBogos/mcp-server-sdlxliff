@@ -221,7 +221,28 @@ Run quality assurance checks on the translation file.
 | `brackets` | Different count of `()[]{}` between source and target | Yes |
 | `inconsistent_repetitions` | Segments with same source text have different translations | Yes |
 | `terminology` | Glossary terms from source must appear in target (requires glossary file) | Yes |
+| `french_typography` | French typography conventions (see below). Runs only when the file's target language is French | Yes |
 | `spelling` | Spellcheck target text using target language from file metadata | **No** (opt-in) |
+
+**French typography check (`french_typography`):**
+
+Verifies, in target text only:
+- A **non-breaking space** (U+00A0) or **narrow non-breaking space** (U+202F) before two-part punctuation `:` `;` `!` `?` (breaking spaces and missing spaces are both flagged)
+- **French guillemets** `« … »` with non-breaking spaces inside, instead of straight (`"`) or English curly (`“ ”`) quotes
+- **French number formatting**: non-breaking space as thousands separator and comma as decimal (`1 234,56`) - English-formatted numbers (`1,234.56`, `3.14`) are flagged
+
+Exceptions handled: times (`10:30`), URLs (`https://`), version numbers (`2.5.1`) are not flagged.
+
+The `french_convention` parameter selects the regional convention:
+
+| Rule | `fr-FR` (France, default) | `fr-CA` (Canada, OQLF) |
+|------|---------------------------|------------------------|
+| Space before `:` | Non-breaking space required | Non-breaking space required (same) |
+| Space before `;` `!` `?` | (Narrow) non-breaking space required | **No space** (recommended); narrow non-breaking space tolerated; breaking space flagged |
+| Guillemets `« »` | Required with inner non-breaking spaces | Same |
+| Numbers `1 234,56` | Space thousands / comma decimal | Same |
+
+If `french_convention` is not given, it is derived from the file's target language: `fr-CA` uses Canadian rules, any other French variant uses `fr-FR` rules.
 
 **Spelling check:**
 - Must be explicitly requested: `checks: ["spelling"]` or `checks: ["spelling", "numbers", ...]`

@@ -490,6 +490,163 @@ def check_terminology(
     return issues
 
 
+# --- French typography ------------------------------------------------------
+#
+# Conventions implemented (see check_french_typography):
+#
+# FR-FR (France, "Imprimerie nationale" usage):
+#   - ':' is preceded by a non-breaking space (U+00A0)
+#   - ';' '!' '?' are preceded by a narrow non-breaking space (U+202F);
+#     a regular non-breaking space (U+00A0) is accepted too
+#   - « guillemets » with a (narrow) non-breaking space inside
+#   - numbers: non-breaking space as thousands separator, comma as decimal
+#
+# FR-CA (Canada, OQLF usage — the differences from FR-FR):
+#   - ':' keeps its preceding non-breaking space (same as FR-FR)
+#   - ';' '!' '?' take NO space before them; a narrow non-breaking space is
+#     tolerated, but a regular breaking space is flagged and a *missing*
+#     space is NOT flagged (it is the recommended form)
+#   - guillemets and number formatting: same as FR-FR
+NBSP = '\u00A0'    # non-breaking space
+NNBSP = '\u202F'   # narrow non-breaking space
+NON_BREAKING_SPACES = {NBSP, NNBSP}
+ALL_SPACES = {' ', NBSP, NNBSP, '\u2009'}  # includes thin space (U+2009)
+
+# Punctuation that takes a preceding (narrow) non-breaking space in French
+FRENCH_TWO_PART_PUNCT = ':;!?'
+
+# English-style quotes that should be « guillemets » in French text
+STRAIGHT_QUOTE = '"'
+CURLY_QUOTES = '“”'  # “ ”
+
+# English-formatted numbers: 1,234,567 or 1,234.56
+ENGLISH_THOUSANDS_PATTERN = re.compile(r'(?<![\d.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d,])')
+# Decimal point numbers: 3.14 (but not 1.2.3 version strings / IP addresses)
+DECIMAL_POINT_PATTERN = re.compile(r'(?<![\d.,])(\d+\.\d+)(?![.\d])')
+
+
+def _is_french(target_lang: Optional[str]) -> bool:
+    """True if the BCP-47 language tag is any variety of French."""
+    return bool(target_lang) and target_lang.split('-')[0].lower() == 'fr'
+
+
+def check_french_typography(
+    segment_id: str,
+    target: str,
+    convention: str = 'fr-FR',
+) -> List[QAIssue]:
+    """
+    Check French typography conventions in target text.
+
+    Verifies spacing before two-part punctuation (: ; ! ?), French
+    guillemets vs English quotes, and French number formatting.
+    The `convention` parameter selects FR-FR (France) or FR-CA (Canada)
+    rules — see the module-level comment for the exact differences.
+
+    Args:
+        segment_id: The segment ID
+        target: Target text to check
+        convention: 'fr-FR' (default) or 'fr-CA'
+
+    Returns:
+        List of QAIssue for any typography problems
+    """
+    issues: List[QAIssue] = []
+
+    if not target:
+        return issues
+
+    is_canadian = convention.lower() == 'fr-ca'
+
+    def add_issue(message: str) -> None:
+        issues.append(QAIssue(
+            segment_id=segment_id,
+            check="french_typography",
+            severity="warning",
+            message=message,
+            source_excerpt="",
+            target_excerpt=_excerpt(target),
+        ))
+
+    # --- Spacing before : ; ! ? ---------------------------------------------
+    reported_punct: Set[str] = set()
+    for i, char in enumerate(target):
+        if char not in FRENCH_TWO_PART_PUNCT or char in reported_punct:
+            continue
+        if i == 0:
+            continue
+        prev = target[i - 1]
+
+        # Skip repeated punctuation ("?!", "...") - only the first one counts
+        if prev in FRENCH_TWO_PART_PUNCT or prev == '.':
+            continue
+        # Skip times, ratios, URLs: "10:30", "http://", "2:1"
+        if char == ':' and i + 1 < len(target) and prev.isdigit() and target[i + 1].isdigit():
+            continue
+        if char == ':' and target[i + 1:i + 3] == '//':
+            continue
+
+        if prev == ' ':
+            if is_canadian and char != ':':
+                add_issue(
+                    f"Space before '{char}' - Canadian French takes no space "
+                    f"before '{char}' (a narrow non-breaking space is tolerated)"
+                )
+            else:
+                add_issue(
+                    f"Breaking space before '{char}' - use a non-breaking space "
+                    f"(the punctuation could wrap to the next line)"
+                )
+            reported_punct.add(char)
+        elif prev not in NON_BREAKING_SPACES and prev not in ALL_SPACES:
+            # No space at all before the punctuation
+            if is_canadian and char != ':':
+                continue  # Recommended form in Canadian French
+            add_issue(f"Missing non-breaking space before '{char}'")
+            reported_punct.add(char)
+
+    # --- Quotes ---------------------------------------------------------------
+    if STRAIGHT_QUOTE in target:
+        add_issue('Straight quotes (") - use French guillemets « » '
+                  'with non-breaking spaces inside')
+    if any(q in target for q in CURLY_QUOTES):
+        add_issue('English curly quotes (“ ”) - use French guillemets « » '
+                  'with non-breaking spaces inside')
+
+    # Guillemets present but missing their inner non-breaking space
+    for i, char in enumerate(target):
+        if char == '«':  # «
+            if i + 1 < len(target) and target[i + 1] not in NON_BREAKING_SPACES:
+                add_issue("Missing non-breaking space after '«'")
+                break
+    for i, char in enumerate(target):
+        if char == '»':  # »
+            if i > 0 and target[i - 1] not in NON_BREAKING_SPACES:
+                add_issue("Missing non-breaking space before '»'")
+                break
+
+    # --- Number formatting ------------------------------------------------------
+    english_numbers = ENGLISH_THOUSANDS_PATTERN.findall(target)
+    if english_numbers:
+        add_issue(
+            f"English number format ({', '.join(english_numbers[:3])}) - French uses "
+            f"a non-breaking space as thousands separator and a comma for decimals "
+            f"(e.g. 1 234,56)"
+        )
+
+    # Remove English-formatted numbers before looking for bare decimal points,
+    # so "1,234.56" is not reported twice
+    remaining = ENGLISH_THOUSANDS_PATTERN.sub('', target)
+    decimal_points = DECIMAL_POINT_PATTERN.findall(remaining)
+    if decimal_points:
+        add_issue(
+            f"Decimal point ({', '.join(decimal_points[:3])}) - French uses a comma "
+            f"for decimals (e.g. {decimal_points[0].replace('.', ',')})"
+        )
+
+    return issues
+
+
 # Module-level cache for spellcheckers (one per language)
 _spellcheckers: Dict[str, Any] = {}
 
@@ -666,6 +823,7 @@ def run_qa_checks(
     glossary_terms: Optional[List[Tuple[str, str]]] = None,
     target_lang: Optional[str] = None,
     custom_words: Optional[Set[str]] = None,
+    french_convention: Optional[str] = None,
 ) -> QAReport:
     """
     Run all QA checks on a list of segments.
@@ -676,19 +834,24 @@ def run_qa_checks(
                 (spelling is OPT-IN and must be explicitly requested).
                 Valid names: trailing_punctuation, numbers, double_spaces,
                             whitespace, brackets, inconsistent_repetitions,
-                            terminology, spelling
+                            terminology, french_typography, spelling
         glossary_terms: Optional list of (source_term, target_term) tuples for
                        terminology checking. If provided and 'terminology' check
                        is enabled, verifies terms are preserved.
-        target_lang: Optional target language code (e.g., 'de-DE') for spelling check.
-                    Only needed if 'spelling' check is enabled.
+        target_lang: Optional target language code (e.g., 'fr-FR') for spelling
+                    and french_typography checks.
         custom_words: Optional set of custom words to ignore during spelling check.
                      Words should be lowercase.
+        french_convention: 'fr-FR' or 'fr-CA' for the french_typography check.
+                          If None, derived from target_lang ('fr-CA' target uses
+                          Canadian conventions, any other French uses FR-FR).
+                          The check only ever runs when target_lang is French.
 
     Returns:
         QAReport with all issues found
     """
-    # Default checks (spelling is OPT-IN, not included here)
+    # Default checks (spelling is OPT-IN, not included here;
+    # french_typography is on by default but only runs for French targets)
     default_checks = {
         'trailing_punctuation',
         'numbers',
@@ -697,6 +860,7 @@ def run_qa_checks(
         'brackets',
         'inconsistent_repetitions',
         'terminology',
+        'french_typography',
     }
 
     # All available checks (includes opt-in checks)
@@ -706,6 +870,17 @@ def run_qa_checks(
         enabled_checks = default_checks  # Use defaults (no spelling)
     else:
         enabled_checks = set(checks) & all_checks  # Use specified checks
+
+    # french_typography only applies to French targets (from file metadata)
+    if not _is_french(target_lang):
+        enabled_checks = enabled_checks - {'french_typography'}
+
+    # Derive the French convention from the target language when not given
+    if french_convention is None:
+        if target_lang and target_lang.lower() == 'fr-ca':
+            french_convention = 'fr-CA'
+        else:
+            french_convention = 'fr-FR'
 
     issues: List[QAIssue] = []
     segments_with_issues: Set[str] = set()
@@ -746,6 +921,10 @@ def run_qa_checks(
         if 'terminology' in enabled_checks and glossary_terms:
             term_issues = check_terminology(segment_id, source, target, glossary_terms)
             segment_issues.extend(term_issues)
+
+        if 'french_typography' in enabled_checks:
+            typo_issues = check_french_typography(segment_id, target, french_convention)
+            segment_issues.extend(typo_issues)
 
         if 'spelling' in enabled_checks and target_lang:
             spelling_issues = check_spelling(segment_id, target, target_lang, custom_words)

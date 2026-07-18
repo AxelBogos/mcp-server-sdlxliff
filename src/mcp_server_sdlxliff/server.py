@@ -7,12 +7,10 @@ through the Model Context Protocol (MCP).
 
 import asyncio
 import json
-import os
 import sys
-import tempfile
 import traceback
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent, Resource
@@ -35,39 +33,24 @@ from .qa import (
 from .languages import is_language_supported
 
 
-# Set up logging - try multiple locations for sandbox compatibility
 def setup_logging():
-    """Set up logging to multiple locations for debugging."""
-    log_locations = [
-        Path("/mnt/sdlxliff_debug.log"),  # Cowork sandbox mounted folder
-        Path.home() / "sdlxliff_debug.log",  # User home
-        Path(tempfile.gettempdir()) / "sdlxliff_mcp_server.log",  # Temp dir
-        Path("sdlxliff_debug.log"),  # Current working directory
-    ]
+    """
+    Set up logging to stderr only.
 
-    handlers = [logging.StreamHandler(sys.stderr)]  # Always log to stderr
-
-    for log_path in log_locations:
-        try:
-            handler = logging.FileHandler(str(log_path), mode='a')
-            handlers.append(handler)
-            break  # Use first writable location
-        except (PermissionError, OSError):
-            continue
-
+    No log files are ever written: translation content is client-confidential
+    and must not be persisted outside the user's working folder. Log messages
+    never include tool arguments or segment text.
+    """
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=handlers
+        handlers=[logging.StreamHandler(sys.stderr)],
     )
     return logging.getLogger("sdlxliff-server")
 
 
 logger = setup_logging()
-logger.info(f"=== MCP Server Starting ===")
-logger.info(f"CWD: {os.getcwd()}")
-logger.info(f"Python: {sys.executable}")
-logger.info(f"Platform: {sys.platform}")
+logger.info("=== MCP Server Starting ===")
 
 # Create the MCP server instance
 app = Server("sdlxliff-server")
@@ -162,15 +145,6 @@ async def list_tools() -> list[Tool]:
                             "Skip Context Matches (CM). CMs are 100% matches where both source, "
                             "target AND surrounding context match the TM. "
                             "Use when client says 'skip CMs' or 'don't touch context matches'. "
-                            "Default: false."
-                        ),
-                        "default": False,
-                    },
-                    "for_indexing": {
-                        "type": "boolean",
-                        "description": (
-                            "Internal use only. When true, bypasses the 50-segment limit. "
-                            "Used by frontend for RAG indexing (segments go to vector store, not Claude context). "
                             "Default: false."
                         ),
                         "default": False,
@@ -421,7 +395,8 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     """Handle tool calls."""
 
-    logger.info(f"call_tool: {name} with arguments: {arguments}")
+    # Log only the tool name - arguments contain file paths and client text
+    logger.info(f"call_tool: {name}")
 
     try:
         if name == "read_sdlxliff":
@@ -431,9 +406,6 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             limit = arguments.get("limit")  # None means all
             max_percent = arguments.get("max_percent")  # None means no filtering
             skip_cm = arguments.get("skip_cm", False)  # Skip Context Matches
-            for_indexing = arguments.get("for_indexing", False)  # Bypass limit for RAG indexing
-            logger.info(f"read_sdlxliff: file_path={file_path}, include_tags={include_tags}, offset={offset}, limit={limit}, max_percent={max_percent}, skip_cm={skip_cm}, for_indexing={for_indexing}")
-            logger.info(f"CWD: {os.getcwd()}")
 
             parser = get_parser(file_path)
             all_segments = parser.extract_segments()
@@ -457,17 +429,9 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             logger.info(f"Extracted {total_count} segments")
 
             # Enforce maximum limit to prevent token overflow
-            # Skip limit cap when for_indexing=True (RAG indexing goes to vector store, not Claude context)
             MAX_SEGMENTS_PER_REQUEST = 50
-            if not for_indexing:
-                if limit is None or limit > MAX_SEGMENTS_PER_REQUEST:
-                    limit = MAX_SEGMENTS_PER_REQUEST
-                    logger.info(f"Limit capped to {MAX_SEGMENTS_PER_REQUEST} segments")
-            else:
-                # For indexing: use requested limit or all segments
-                if limit is None:
-                    limit = len(all_segments)
-                logger.info(f"For indexing: returning up to {limit} segments (no cap)")
+            if limit is None or limit > MAX_SEGMENTS_PER_REQUEST:
+                limit = MAX_SEGMENTS_PER_REQUEST
 
             # Apply pagination
             segments = all_segments[offset:offset + limit]

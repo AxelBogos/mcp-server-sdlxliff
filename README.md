@@ -201,10 +201,8 @@ Run quality assurance checks on the translation file.
 
 **Spelling check:**
 - Must be explicitly requested: `checks: ["spelling"]` or `checks: ["spelling", "numbers", ...]`
-- Uses target language from SDLXLIFF metadata (e.g., `de-DE`, `ru-RU`)
-- Supported languages:
-  - **Russian, Ukrainian, English**: [Yandex.Speller](http://api.yandex.ru/speller/) (proper morphological dictionary)
-  - **German, Spanish, French, Italian, Portuguese, Dutch**: pyspellchecker
+- Uses target language from SDLXLIFF metadata (e.g., `fr-FR`, `de-DE`)
+- Supported languages: **English, German, Spanish, French, Italian, Portuguese, Dutch** (offline pyspellchecker dictionaries — no network access)
 - Unsupported languages are silently skipped (no false positives for rare languages)
 
 **Glossary file format:**
@@ -381,10 +379,6 @@ mcpb pack .
 ```
 
 This creates `mcp-server-sdlxliff-X.X.X.mcpb` ready for installation in Claude Desktop.
-
-## Acknowledgments
-
-- **Spelling check for Russian, Ukrainian, and English**: [Yandex.Speller](http://api.yandex.ru/speller/)
 
 ## License
 

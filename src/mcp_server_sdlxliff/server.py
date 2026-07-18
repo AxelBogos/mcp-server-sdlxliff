@@ -326,7 +326,7 @@ async def list_tools() -> list[Tool]:
                 "inconsistent repetitions (same source text translated differently), "
                 "and terminology (glossary compliance). "
                 "OPT-IN checks: spelling (must be explicitly requested via checks parameter). "
-                "Spelling uses target language from file metadata; supports: en, de, es, fr, it, pt, ru, nl, lv, eu, fa, ar. "
+                "Spelling uses target language from file metadata; supports: en, de, es, fr, it, pt, nl (offline dictionaries, no network). "
                 "For terminology check: auto-discovers glossary.tsv/txt in same folder as SDLXLIFF, "
                 "or specify explicit glossary_path. "
                 "For spelling check: auto-discovers dictionary.txt/custom_words.txt/spelling.txt in same folder, "

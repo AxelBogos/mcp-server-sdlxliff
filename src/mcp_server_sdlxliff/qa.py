@@ -12,11 +12,7 @@ Provides stateless QA check functions that detect common translation issues:
 - Spelling (opt-in, requires explicit check selection)
 """
 
-import json
 import re
-import urllib.request
-import urllib.parse
-import urllib.error
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,7 +24,7 @@ try:
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
 
-from .languages import get_spellcheck_config, BACKEND_YANDEX, BACKEND_PYSPELLCHECKER
+from .languages import get_spellcheck_lang
 
 
 @dataclass
@@ -574,105 +570,6 @@ def discover_custom_dictionary(sdlxliff_path: str) -> Optional[str]:
     return None
 
 
-def _check_spelling_yandex(
-    segment_id: str,
-    target: str,
-    lang_code: str,
-    custom_words: Optional[Set[str]] = None,
-) -> List[QAIssue]:
-    """
-    Check spelling using Yandex Speller API.
-
-    Yandex Speller has proper morphological dictionaries for Russian, Ukrainian,
-    and English, providing much better accuracy than frequency-based spellcheckers.
-
-    Args:
-        segment_id: The segment ID
-        target: Target text to check
-        lang_code: Yandex language code ('ru', 'uk', 'en')
-        custom_words: Optional set of custom words to ignore (lowercase)
-
-    Returns:
-        List of QAIssue for any misspelled words
-    """
-    issues: List[QAIssue] = []
-
-    if not target:
-        return issues
-
-    # Yandex Speller API endpoint
-    url = "https://speller.yandex.net/services/spellservice.json/checkText"
-
-    # Yandex Speller options (additive bitmask):
-    # IGNORE_DIGITS = 2 (skip words with numbers like "авп17х4534")
-    # IGNORE_URLS = 4 (skip URLs, emails, filenames)
-    # FIND_REPEAT_WORDS = 8 (flag repeated words)
-    # IGNORE_CAPITALIZATION = 512 (ignore case errors)
-    options = 2 + 4  # IGNORE_DIGITS + IGNORE_URLS
-
-    # Sanitize text: replace special Unicode characters that break Yandex API
-    # Many Unicode punctuation and space characters cause empty responses
-    sanitized_target = target
-
-    # Quotes (various styles) -> ASCII quotes
-    # « » „ " ‟ " ‹ › ' ' ‚ '
-    quote_chars = '\u00AB\u00BB\u201E\u201C\u201F\u201D\u2039\u203A\u2018\u2019\u201A\u2032'
-    for char in quote_chars:
-        sanitized_target = sanitized_target.replace(char, '"')
-
-    # Dashes (em-dash, en-dash, figure dash, minus sign, etc.) -> ASCII hyphen
-    # — – ‒ − ‐
-    dash_chars = '\u2014\u2013\u2012\u2212\u2010'
-    for char in dash_chars:
-        sanitized_target = sanitized_target.replace(char, '-')
-
-    # Special spaces (non-breaking, thin, zero-width, etc.) -> regular space
-    space_chars = '\u00A0\u2009\u200A\u200B\u202F\u2007\u2008'
-    for char in space_chars:
-        sanitized_target = sanitized_target.replace(char, ' ')
-
-    # Ellipsis -> three dots (this one actually works, but normalize anyway)
-    sanitized_target = sanitized_target.replace('\u2026', '...')
-
-    # Prepare request
-    params = urllib.parse.urlencode({
-        'text': sanitized_target,
-        'lang': lang_code,
-        'options': options,
-    })
-
-    try:
-        # Make API request (timeout 5 seconds)
-        req = urllib.request.Request(f"{url}?{params}")
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
-        # If API fails, return empty (don't block QA)
-        return issues
-
-    # Process response - array of error objects
-    # Each error: {"code": 1, "pos": 0, "len": 14, "word": "синхрафазатрон", "s": ["синхрофазотрон"]}
-    for error in data:
-        word = error.get('word', '')
-        suggestions = error.get('s', [])[:3]
-
-        # Filter out custom dictionary words
-        if custom_words and word.lower() in custom_words:
-            continue
-
-        suggestion_text = f" (suggestions: {', '.join(suggestions)})" if suggestions else ""
-        issues.append(QAIssue(
-            segment_id=segment_id,
-            check="spelling",
-            severity="warning",
-            message=f"Possible misspelling: '{word}'{suggestion_text}",
-            source_excerpt="",
-            target_excerpt=_excerpt(target),
-        ))
-
-    return issues
-
-
 def _check_spelling_pyspellchecker(
     segment_id: str,
     target: str,
@@ -739,16 +636,15 @@ def check_spelling(
     custom_words: Optional[Set[str]] = None,
 ) -> List[QAIssue]:
     """
-    Check spelling in target text.
+    Check spelling in target text using offline pyspellchecker dictionaries.
 
-    Routes to appropriate spellcheck backend based on language:
-    - Yandex Speller: Russian, Ukrainian, English (proper morphology)
-    - pyspellchecker: German, Spanish, French, Italian, Portuguese, Dutch
+    Supported languages: English, German, Spanish, French, Italian,
+    Portuguese, Dutch. Runs fully offline — no network access.
 
     Args:
         segment_id: The segment ID
         target: Target text to check
-        target_lang: BCP-47 language code (e.g., 'de-DE', 'ru-RU')
+        target_lang: BCP-47 language code (e.g., 'fr-FR', 'de-DE')
         custom_words: Optional set of custom words to ignore (lowercase)
 
     Returns:
@@ -757,18 +653,11 @@ def check_spelling(
     if not target or not target_lang:
         return []
 
-    config = get_spellcheck_config(target_lang)
-    if not config:
+    lang_code = get_spellcheck_lang(target_lang)
+    if not lang_code:
         return []  # Language not supported
 
-    backend, lang_code = config
-
-    if backend == BACKEND_YANDEX:
-        return _check_spelling_yandex(segment_id, target, lang_code, custom_words)
-    elif backend == BACKEND_PYSPELLCHECKER:
-        return _check_spelling_pyspellchecker(segment_id, target, lang_code, custom_words)
-    else:
-        return []
+    return _check_spelling_pyspellchecker(segment_id, target, lang_code, custom_words)
 
 
 def run_qa_checks(

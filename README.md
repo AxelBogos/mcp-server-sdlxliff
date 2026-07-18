@@ -1,8 +1,12 @@
-# mcp-server-sdlxliff
+# sdlxliff-translator-fr
 
 **Chat with your SDL Trados translation files using Claude.**
 
-Review translations, find errors, and make corrections through simple natural conversation - no manual XML editing required.
+Review translations, find errors, and make corrections through simple natural conversation - no manual XML editing required. Built for English→French translation workflows: French typography QA (FR-FR and FR-CA), offline-only spellchecking, and an invisible local version history with one-step undo.
+
+Everything runs on your machine: this extension makes **no network calls** and your files and their history **never leave your computer**.
+
+> Forked and reworked from [EugeneAnt/mcp-server-sdlxliff](https://github.com/EugeneAnt/mcp-server-sdlxliff).
 
 ## What You Can Do
 
@@ -25,7 +29,7 @@ Use with your Claude Pro or Team subscription through Claude Cowork.
 
 **Option A: Desktop Extension (Recommended)**
 
-1. Download `mcp-server-sdlxliff-1.1.0.mcpb` from [Releases](https://github.com/EugeneAnt/mcp-server-sdlxliff/releases)
+1. Download `sdlxliff-translator-fr-X.X.X.mcpb` from [Releases](https://github.com/AxelBogos/mcp-server-sdlxliff/releases) (or build it yourself, see [Development](#development))
 2. Open Claude Desktop → Settings → Extensions
 3. Click "Install Extension" and select the downloaded `.mcpb` file
 4. The extension installs automatically (Python and dependencies are managed for you)
@@ -398,7 +402,7 @@ Claude Desktop Chat runs Claude in a **gVisor sandboxed container** for security
 
 ```bash
 # Clone the repository
-git clone https://github.com/EugeneAnt/mcp-server-sdlxliff.git
+git clone https://github.com/AxelBogos/mcp-server-sdlxliff.git
 cd mcp-server-sdlxliff
 
 # Install with dev dependencies

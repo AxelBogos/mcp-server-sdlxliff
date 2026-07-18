@@ -4,15 +4,6 @@
 
 Review translations, find errors, and make corrections through simple natural conversation - no manual XML editing required.
 
-## Two Ways to Use
-
-| Option | Best For | Claude Access |
-|--------|----------|---------------|
-| **[XLIFF Chat Desktop App](#xliff-chat-desktop-app)** | Professional users who want a dedicated app | API key (pay per use) |
-| **[Claude Desktop Extension](#claude-desktop-extension)** | Claude Pro/Team subscribers | Claude subscription |
-
-Both options use the same MCP server under the hood - choose based on how you prefer to access Claude.
-
 ## What You Can Do
 
 Just ask Claude in plain language:
@@ -25,37 +16,6 @@ Just ask Claude in plain language:
 - *"Save my changes"*
 
 Claude reads your SDLXLIFF files, understands the translation context, and can make corrections while preserving all formatting tags automatically.
-
-## XLIFF Chat Desktop App
-
-A standalone macOS app with a native file picker - no command line required.
-
-### Installation
-
-1. Install the MCP server **globally** (not in a virtual environment):
-   ```bash
-   pip3 install mcp-server-sdlxliff
-   ```
-
-   > **Note:** The desktop app looks for Python at `/opt/homebrew/bin/python3` (Apple Silicon) or `/usr/local/bin/python3` (Intel Mac). Make sure to install with the same `pip3` that corresponds to your Homebrew Python.
-
-2. Download `XLIFF Chat_1.1.0_aarch64.dmg` from [Releases](https://github.com/EugeneAnt/mcp-server-sdlxliff/releases)
-
-3. Open the `.dmg` and drag XLIFF Chat to your Applications folder
-
-4. Launch XLIFF Chat and enter your [Anthropic API key](https://console.anthropic.com/)
-
-### Usage
-
-1. Click **File** or **Folder** button to select SDLXLIFF files
-2. The MCP server connects automatically
-3. Start chatting - ask Claude to review, check, or edit your translations
-
-### Requirements
-
-- macOS 10.15 or later
-- Python 3.10+ with `mcp-server-sdlxliff` installed globally
-- Anthropic API key
 
 ## Claude Desktop Extension
 
@@ -389,7 +349,7 @@ Claude Desktop Chat runs Claude in a **gVisor sandboxed container** for security
 └─────────────────────────────────────────┘
 ```
 
-**Workaround:** Use **Claude Cowork** or **XLIFF Chat** instead, which have direct access to your local files.
+**Workaround:** Use **Claude Cowork** instead, which has direct access to your local files.
 
 ## Development
 
@@ -421,20 +381,6 @@ mcpb pack .
 ```
 
 This creates `mcp-server-sdlxliff-X.X.X.mcpb` ready for installation in Claude Desktop.
-
-### Building the Desktop App
-
-```bash
-cd desktop
-
-# Install dependencies
-bun install
-
-# Build for macOS
-bun run tauri build
-```
-
-This creates `XLIFF Chat.dmg` in `desktop/src-tauri/target/release/bundle/dmg/`.
 
 ## Acknowledgments
 

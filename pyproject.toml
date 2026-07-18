@@ -56,7 +56,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
-    "desktop/",
     "ai/",
     "tests/",
     "internal/",

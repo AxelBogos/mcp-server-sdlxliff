@@ -37,3 +37,5 @@ internal
 
 # MCPB build artifacts
 *.mcpb
+# Built extension bundles are ignored except released ones in releases/
+!releases/*.mcpb

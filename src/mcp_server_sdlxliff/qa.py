@@ -12,11 +12,7 @@ Provides stateless QA check functions that detect common translation issues:
 - Spelling (opt-in, requires explicit check selection)
 """
 
-import json
 import re
-import urllib.request
-import urllib.parse
-import urllib.error
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,7 +24,7 @@ try:
 except ImportError:
     SPELLCHECKER_AVAILABLE = False
 
-from .languages import get_spellcheck_config, BACKEND_YANDEX, BACKEND_PYSPELLCHECKER
+from .languages import get_spellcheck_lang
 
 
 @dataclass
@@ -494,6 +490,163 @@ def check_terminology(
     return issues
 
 
+# --- French typography ------------------------------------------------------
+#
+# Conventions implemented (see check_french_typography):
+#
+# FR-FR (France, "Imprimerie nationale" usage):
+#   - ':' is preceded by a non-breaking space (U+00A0)
+#   - ';' '!' '?' are preceded by a narrow non-breaking space (U+202F);
+#     a regular non-breaking space (U+00A0) is accepted too
+#   - « guillemets » with a (narrow) non-breaking space inside
+#   - numbers: non-breaking space as thousands separator, comma as decimal
+#
+# FR-CA (Canada, OQLF usage — the differences from FR-FR):
+#   - ':' keeps its preceding non-breaking space (same as FR-FR)
+#   - ';' '!' '?' take NO space before them; a narrow non-breaking space is
+#     tolerated, but a regular breaking space is flagged and a *missing*
+#     space is NOT flagged (it is the recommended form)
+#   - guillemets and number formatting: same as FR-FR
+NBSP = '\u00A0'    # non-breaking space
+NNBSP = '\u202F'   # narrow non-breaking space
+NON_BREAKING_SPACES = {NBSP, NNBSP}
+ALL_SPACES = {' ', NBSP, NNBSP, '\u2009'}  # includes thin space (U+2009)
+
+# Punctuation that takes a preceding (narrow) non-breaking space in French
+FRENCH_TWO_PART_PUNCT = ':;!?'
+
+# English-style quotes that should be « guillemets » in French text
+STRAIGHT_QUOTE = '"'
+CURLY_QUOTES = '“”'  # “ ”
+
+# English-formatted numbers: 1,234,567 or 1,234.56
+ENGLISH_THOUSANDS_PATTERN = re.compile(r'(?<![\d.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d,])')
+# Decimal point numbers: 3.14 (but not 1.2.3 version strings / IP addresses)
+DECIMAL_POINT_PATTERN = re.compile(r'(?<![\d.,])(\d+\.\d+)(?![.\d])')
+
+
+def _is_french(target_lang: Optional[str]) -> bool:
+    """True if the BCP-47 language tag is any variety of French."""
+    return bool(target_lang) and target_lang.split('-')[0].lower() == 'fr'
+
+
+def check_french_typography(
+    segment_id: str,
+    target: str,
+    convention: str = 'fr-FR',
+) -> List[QAIssue]:
+    """
+    Check French typography conventions in target text.
+
+    Verifies spacing before two-part punctuation (: ; ! ?), French
+    guillemets vs English quotes, and French number formatting.
+    The `convention` parameter selects FR-FR (France) or FR-CA (Canada)
+    rules — see the module-level comment for the exact differences.
+
+    Args:
+        segment_id: The segment ID
+        target: Target text to check
+        convention: 'fr-FR' (default) or 'fr-CA'
+
+    Returns:
+        List of QAIssue for any typography problems
+    """
+    issues: List[QAIssue] = []
+
+    if not target:
+        return issues
+
+    is_canadian = convention.lower() == 'fr-ca'
+
+    def add_issue(message: str) -> None:
+        issues.append(QAIssue(
+            segment_id=segment_id,
+            check="french_typography",
+            severity="warning",
+            message=message,
+            source_excerpt="",
+            target_excerpt=_excerpt(target),
+        ))
+
+    # --- Spacing before : ; ! ? ---------------------------------------------
+    reported_punct: Set[str] = set()
+    for i, char in enumerate(target):
+        if char not in FRENCH_TWO_PART_PUNCT or char in reported_punct:
+            continue
+        if i == 0:
+            continue
+        prev = target[i - 1]
+
+        # Skip repeated punctuation ("?!", "...") - only the first one counts
+        if prev in FRENCH_TWO_PART_PUNCT or prev == '.':
+            continue
+        # Skip times, ratios, URLs: "10:30", "http://", "2:1"
+        if char == ':' and i + 1 < len(target) and prev.isdigit() and target[i + 1].isdigit():
+            continue
+        if char == ':' and target[i + 1:i + 3] == '//':
+            continue
+
+        if prev == ' ':
+            if is_canadian and char != ':':
+                add_issue(
+                    f"Space before '{char}' - Canadian French takes no space "
+                    f"before '{char}' (a narrow non-breaking space is tolerated)"
+                )
+            else:
+                add_issue(
+                    f"Breaking space before '{char}' - use a non-breaking space "
+                    f"(the punctuation could wrap to the next line)"
+                )
+            reported_punct.add(char)
+        elif prev not in NON_BREAKING_SPACES and prev not in ALL_SPACES:
+            # No space at all before the punctuation
+            if is_canadian and char != ':':
+                continue  # Recommended form in Canadian French
+            add_issue(f"Missing non-breaking space before '{char}'")
+            reported_punct.add(char)
+
+    # --- Quotes ---------------------------------------------------------------
+    if STRAIGHT_QUOTE in target:
+        add_issue('Straight quotes (") - use French guillemets « » '
+                  'with non-breaking spaces inside')
+    if any(q in target for q in CURLY_QUOTES):
+        add_issue('English curly quotes (“ ”) - use French guillemets « » '
+                  'with non-breaking spaces inside')
+
+    # Guillemets present but missing their inner non-breaking space
+    for i, char in enumerate(target):
+        if char == '«':  # «
+            if i + 1 < len(target) and target[i + 1] not in NON_BREAKING_SPACES:
+                add_issue("Missing non-breaking space after '«'")
+                break
+    for i, char in enumerate(target):
+        if char == '»':  # »
+            if i > 0 and target[i - 1] not in NON_BREAKING_SPACES:
+                add_issue("Missing non-breaking space before '»'")
+                break
+
+    # --- Number formatting ------------------------------------------------------
+    english_numbers = ENGLISH_THOUSANDS_PATTERN.findall(target)
+    if english_numbers:
+        add_issue(
+            f"English number format ({', '.join(english_numbers[:3])}) - French uses "
+            f"a non-breaking space as thousands separator and a comma for decimals "
+            f"(e.g. 1 234,56)"
+        )
+
+    # Remove English-formatted numbers before looking for bare decimal points,
+    # so "1,234.56" is not reported twice
+    remaining = ENGLISH_THOUSANDS_PATTERN.sub('', target)
+    decimal_points = DECIMAL_POINT_PATTERN.findall(remaining)
+    if decimal_points:
+        add_issue(
+            f"Decimal point ({', '.join(decimal_points[:3])}) - French uses a comma "
+            f"for decimals (e.g. {decimal_points[0].replace('.', ',')})"
+        )
+
+    return issues
+
+
 # Module-level cache for spellcheckers (one per language)
 _spellcheckers: Dict[str, Any] = {}
 
@@ -574,105 +727,6 @@ def discover_custom_dictionary(sdlxliff_path: str) -> Optional[str]:
     return None
 
 
-def _check_spelling_yandex(
-    segment_id: str,
-    target: str,
-    lang_code: str,
-    custom_words: Optional[Set[str]] = None,
-) -> List[QAIssue]:
-    """
-    Check spelling using Yandex Speller API.
-
-    Yandex Speller has proper morphological dictionaries for Russian, Ukrainian,
-    and English, providing much better accuracy than frequency-based spellcheckers.
-
-    Args:
-        segment_id: The segment ID
-        target: Target text to check
-        lang_code: Yandex language code ('ru', 'uk', 'en')
-        custom_words: Optional set of custom words to ignore (lowercase)
-
-    Returns:
-        List of QAIssue for any misspelled words
-    """
-    issues: List[QAIssue] = []
-
-    if not target:
-        return issues
-
-    # Yandex Speller API endpoint
-    url = "https://speller.yandex.net/services/spellservice.json/checkText"
-
-    # Yandex Speller options (additive bitmask):
-    # IGNORE_DIGITS = 2 (skip words with numbers like "авп17х4534")
-    # IGNORE_URLS = 4 (skip URLs, emails, filenames)
-    # FIND_REPEAT_WORDS = 8 (flag repeated words)
-    # IGNORE_CAPITALIZATION = 512 (ignore case errors)
-    options = 2 + 4  # IGNORE_DIGITS + IGNORE_URLS
-
-    # Sanitize text: replace special Unicode characters that break Yandex API
-    # Many Unicode punctuation and space characters cause empty responses
-    sanitized_target = target
-
-    # Quotes (various styles) -> ASCII quotes
-    # « » „ " ‟ " ‹ › ' ' ‚ '
-    quote_chars = '\u00AB\u00BB\u201E\u201C\u201F\u201D\u2039\u203A\u2018\u2019\u201A\u2032'
-    for char in quote_chars:
-        sanitized_target = sanitized_target.replace(char, '"')
-
-    # Dashes (em-dash, en-dash, figure dash, minus sign, etc.) -> ASCII hyphen
-    # — – ‒ − ‐
-    dash_chars = '\u2014\u2013\u2012\u2212\u2010'
-    for char in dash_chars:
-        sanitized_target = sanitized_target.replace(char, '-')
-
-    # Special spaces (non-breaking, thin, zero-width, etc.) -> regular space
-    space_chars = '\u00A0\u2009\u200A\u200B\u202F\u2007\u2008'
-    for char in space_chars:
-        sanitized_target = sanitized_target.replace(char, ' ')
-
-    # Ellipsis -> three dots (this one actually works, but normalize anyway)
-    sanitized_target = sanitized_target.replace('\u2026', '...')
-
-    # Prepare request
-    params = urllib.parse.urlencode({
-        'text': sanitized_target,
-        'lang': lang_code,
-        'options': options,
-    })
-
-    try:
-        # Make API request (timeout 5 seconds)
-        req = urllib.request.Request(f"{url}?{params}")
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
-        # If API fails, return empty (don't block QA)
-        return issues
-
-    # Process response - array of error objects
-    # Each error: {"code": 1, "pos": 0, "len": 14, "word": "синхрафазатрон", "s": ["синхрофазотрон"]}
-    for error in data:
-        word = error.get('word', '')
-        suggestions = error.get('s', [])[:3]
-
-        # Filter out custom dictionary words
-        if custom_words and word.lower() in custom_words:
-            continue
-
-        suggestion_text = f" (suggestions: {', '.join(suggestions)})" if suggestions else ""
-        issues.append(QAIssue(
-            segment_id=segment_id,
-            check="spelling",
-            severity="warning",
-            message=f"Possible misspelling: '{word}'{suggestion_text}",
-            source_excerpt="",
-            target_excerpt=_excerpt(target),
-        ))
-
-    return issues
-
-
 def _check_spelling_pyspellchecker(
     segment_id: str,
     target: str,
@@ -739,16 +793,15 @@ def check_spelling(
     custom_words: Optional[Set[str]] = None,
 ) -> List[QAIssue]:
     """
-    Check spelling in target text.
+    Check spelling in target text using offline pyspellchecker dictionaries.
 
-    Routes to appropriate spellcheck backend based on language:
-    - Yandex Speller: Russian, Ukrainian, English (proper morphology)
-    - pyspellchecker: German, Spanish, French, Italian, Portuguese, Dutch
+    Supported languages: English, German, Spanish, French, Italian,
+    Portuguese, Dutch. Runs fully offline — no network access.
 
     Args:
         segment_id: The segment ID
         target: Target text to check
-        target_lang: BCP-47 language code (e.g., 'de-DE', 'ru-RU')
+        target_lang: BCP-47 language code (e.g., 'fr-FR', 'de-DE')
         custom_words: Optional set of custom words to ignore (lowercase)
 
     Returns:
@@ -757,18 +810,11 @@ def check_spelling(
     if not target or not target_lang:
         return []
 
-    config = get_spellcheck_config(target_lang)
-    if not config:
+    lang_code = get_spellcheck_lang(target_lang)
+    if not lang_code:
         return []  # Language not supported
 
-    backend, lang_code = config
-
-    if backend == BACKEND_YANDEX:
-        return _check_spelling_yandex(segment_id, target, lang_code, custom_words)
-    elif backend == BACKEND_PYSPELLCHECKER:
-        return _check_spelling_pyspellchecker(segment_id, target, lang_code, custom_words)
-    else:
-        return []
+    return _check_spelling_pyspellchecker(segment_id, target, lang_code, custom_words)
 
 
 def run_qa_checks(
@@ -777,6 +823,7 @@ def run_qa_checks(
     glossary_terms: Optional[List[Tuple[str, str]]] = None,
     target_lang: Optional[str] = None,
     custom_words: Optional[Set[str]] = None,
+    french_convention: Optional[str] = None,
 ) -> QAReport:
     """
     Run all QA checks on a list of segments.
@@ -787,19 +834,24 @@ def run_qa_checks(
                 (spelling is OPT-IN and must be explicitly requested).
                 Valid names: trailing_punctuation, numbers, double_spaces,
                             whitespace, brackets, inconsistent_repetitions,
-                            terminology, spelling
+                            terminology, french_typography, spelling
         glossary_terms: Optional list of (source_term, target_term) tuples for
                        terminology checking. If provided and 'terminology' check
                        is enabled, verifies terms are preserved.
-        target_lang: Optional target language code (e.g., 'de-DE') for spelling check.
-                    Only needed if 'spelling' check is enabled.
+        target_lang: Optional target language code (e.g., 'fr-FR') for spelling
+                    and french_typography checks.
         custom_words: Optional set of custom words to ignore during spelling check.
                      Words should be lowercase.
+        french_convention: 'fr-FR' or 'fr-CA' for the french_typography check.
+                          If None, derived from target_lang ('fr-CA' target uses
+                          Canadian conventions, any other French uses FR-FR).
+                          The check only ever runs when target_lang is French.
 
     Returns:
         QAReport with all issues found
     """
-    # Default checks (spelling is OPT-IN, not included here)
+    # Default checks (spelling is OPT-IN, not included here;
+    # french_typography is on by default but only runs for French targets)
     default_checks = {
         'trailing_punctuation',
         'numbers',
@@ -808,6 +860,7 @@ def run_qa_checks(
         'brackets',
         'inconsistent_repetitions',
         'terminology',
+        'french_typography',
     }
 
     # All available checks (includes opt-in checks)
@@ -817,6 +870,17 @@ def run_qa_checks(
         enabled_checks = default_checks  # Use defaults (no spelling)
     else:
         enabled_checks = set(checks) & all_checks  # Use specified checks
+
+    # french_typography only applies to French targets (from file metadata)
+    if not _is_french(target_lang):
+        enabled_checks = enabled_checks - {'french_typography'}
+
+    # Derive the French convention from the target language when not given
+    if french_convention is None:
+        if target_lang and target_lang.lower() == 'fr-ca':
+            french_convention = 'fr-CA'
+        else:
+            french_convention = 'fr-FR'
 
     issues: List[QAIssue] = []
     segments_with_issues: Set[str] = set()
@@ -857,6 +921,10 @@ def run_qa_checks(
         if 'terminology' in enabled_checks and glossary_terms:
             term_issues = check_terminology(segment_id, source, target, glossary_terms)
             segment_issues.extend(term_issues)
+
+        if 'french_typography' in enabled_checks:
+            typo_issues = check_french_typography(segment_id, target, french_convention)
+            segment_issues.extend(typo_issues)
 
         if 'spelling' in enabled_checks and target_lang:
             spelling_issues = check_spelling(segment_id, target, target_lang, custom_words)

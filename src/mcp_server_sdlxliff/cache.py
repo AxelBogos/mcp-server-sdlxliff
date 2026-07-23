@@ -3,7 +3,6 @@ Caching and path resolution for the SDLXLIFF MCP server.
 
 Provides:
 - LRU-style parser cache with modification time validation
-- Sandbox path resolution for Cowork compatibility
 - File extension validation
 """
 
@@ -29,7 +28,6 @@ class CachedParser:
 
 # Module-level cache state
 _parser_cache: dict[str, CachedParser] = {}
-_path_resolution_cache: dict[str, Path] = {}
 
 
 def validate_file_extension(file_path: str) -> None:
@@ -53,90 +51,33 @@ def validate_file_extension(file_path: str) -> None:
 
 def resolve_file_path(file_path: str) -> Path:
     """
-    Resolve a file path, handling Cowork sandbox path translation.
+    Resolve a file path to the exact file requested.
+
+    Only the given path is considered - no directory scanning or filename
+    guessing is performed.
 
     Args:
-        file_path: The file path to resolve (may be sandbox or host path)
+        file_path: The file path to resolve
 
     Returns:
         Resolved Path object
 
     Raises:
-        FileNotFoundError: If file cannot be found in any location
+        FileNotFoundError: If the file does not exist at the given path
         ValueError: If the file extension is not allowed
     """
     # Validate file extension first
     validate_file_extension(file_path)
 
-    # Check path resolution cache first (for sandbox paths)
-    if file_path in _path_resolution_cache:
-        cached_path = _path_resolution_cache[file_path]
-        if cached_path.exists():
-            logger.info(f"Path cache hit: {file_path} -> {cached_path}")
-            return cached_path
-        else:
-            # Cached path no longer exists, remove from cache
-            del _path_resolution_cache[file_path]
-
-    logger.info(f"resolve_file_path called with: {file_path}")
-
     path = Path(file_path)
 
-    # Fast path: if the file exists directly, return immediately
     try:
         if path.exists() and path.is_file():
-            resolved = path.resolve()
-            logger.info(f"Direct path exists: {resolved}")
-            return resolved
+            return path.resolve()
     except (OSError, ValueError) as e:
-        logger.debug(f"Direct path check failed: {e}")
+        logger.debug(f"Path check failed: {e}")
 
-    # If it's not a sandbox path and doesn't exist, fail fast
-    is_sandbox_path = "/sessions/" in file_path or file_path.startswith("/mnt/")
-    if not is_sandbox_path:
-        raise FileNotFoundError(f"File not found: {file_path}")
-
-    # Sandbox path translation: extract filename and parent folder
-    filename = path.name
-    parent_name = path.parent.name if path.parent.name and path.parent.name != "mnt" else None
-
-    logger.info(f"Sandbox path detected, searching for: {filename} in parent: {parent_name}")
-
-    # Search in common user directories
-    home = Path.home()
-    search_roots = [
-        home / "Documents",
-        home / "Downloads",
-        home / "Desktop",
-    ]
-
-    # Try direct subfolder paths first (fast)
-    for root in search_roots:
-        if not root.exists():
-            continue
-        if parent_name:
-            candidate = root / parent_name / filename
-            if candidate.exists() and candidate.is_file():
-                logger.info(f"Found via direct path: {candidate}")
-                return candidate.resolve()
-
-    # Last resort: recursive search (slow, but limited)
-    for root in search_roots:
-        if not root.exists():
-            continue
-        try:
-            pattern = f"**/{parent_name}/{filename}" if parent_name else f"**/{filename}"
-            for match in root.glob(pattern):
-                if match.is_file():
-                    resolved = match.resolve()
-                    logger.info(f"Found via glob: {resolved}")
-                    # Cache the resolution for future calls
-                    _path_resolution_cache[file_path] = resolved
-                    return resolved
-        except (PermissionError, OSError) as e:
-            logger.debug(f"Glob search in {root} failed: {e}")
-
-    raise FileNotFoundError(f"File not found: {file_path}\nSearched for: {filename}")
+    raise FileNotFoundError(f"File not found: {file_path}")
 
 
 def get_parser(file_path: str) -> "SDLXLIFFParser":

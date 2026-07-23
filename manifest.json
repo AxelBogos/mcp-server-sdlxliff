@@ -1,13 +1,13 @@
 {
   "manifest_version": "0.4",
-  "name": "mcp-server-sdlxliff",
-  "display_name": "SDLXLIFF Translation Editor",
-  "version": "1.4.0",
-  "description": "Read, review, and edit SDL Trados SDLXLIFF translation files with Claude. Supports inline tag preservation, pagination, and atomic saves with backup.",
-  "long_description": "An MCP server for working with SDLXLIFF translation files (SDL Trados Studio format). Features include:\n\n- Extract translation segments with source/target text and status\n- Update translations with automatic tag preservation\n- Paginated reading for large files\n- Atomic writes with automatic backup\n- Statistics and segment filtering\n\nDesigned for use with Claude Cowork to review and correct translations.",
+  "name": "sdlxliff-translator-fr",
+  "display_name": "SDLXLIFF Translator (EN→FR)",
+  "version": "2.0.0",
+  "description": "Translate and QA SDL Trados SDLXLIFF files with Claude. Fully offline: French typography checks, offline spellcheck, and invisible local version history with one-step undo.",
+  "long_description": "An MCP server for English→French translation work on SDLXLIFF files (SDL Trados Studio format), reworked from EugeneAnt/mcp-server-sdlxliff for confidential translation workflows.\n\nEverything runs locally — no network access, no telemetry, no data ever leaves your machine.\n\nFeatures:\n\n- Extract translation segments with source/target text and status\n- Update translations with automatic tag preservation and atomic saves\n- Paginated reading for large files\n- Invisible version history: every save keeps a local snapshot automatically; review what changed segment by segment or undo a save in one step (no git installation required, history never leaves your machine)\n- QA checks including French typography (non-breaking spaces before : ; ! ?, « guillemets », French number formatting) with FR-FR and FR-CA conventions\n- Offline spelling check (English, French, German, Spanish, Italian, Portuguese, Dutch)\n- Glossary/terminology compliance checking\n\nDesigned for use with Claude Cowork to translate and review SDLXLIFF files.",
   "author": {
-    "name": "Yevgeni Antonov",
-    "url": "https://github.com/EugeneAnt"
+    "name": "Axel Bogos",
+    "url": "https://github.com/AxelBogos"
   },
   "server": {
     "type": "uv",
@@ -42,7 +42,7 @@
     },
     {
       "name": "save_sdlxliff",
-      "description": "Save changes to the SDLXLIFF file"
+      "description": "Save changes to the SDLXLIFF file (a version snapshot is kept automatically)"
     },
     {
       "name": "get_sdlxliff_statistics",
@@ -50,7 +50,19 @@
     },
     {
       "name": "qa_check_sdlxliff",
-      "description": "Run QA checks: punctuation, numbers, spacing, brackets, repetition consistency"
+      "description": "Run QA checks: punctuation, numbers, spacing, brackets, repetition consistency, French typography, offline spelling"
+    },
+    {
+      "name": "list_file_history",
+      "description": "Show the automatically saved versions of a file, with dates and change summaries"
+    },
+    {
+      "name": "diff_versions",
+      "description": "Compare a saved version with the current file, segment by segment"
+    },
+    {
+      "name": "restore_version",
+      "description": "Bring back an earlier version of a file (one-step undo of a save)"
     }
   ],
   "keywords": [
@@ -60,14 +72,15 @@
     "xliff",
     "trados",
     "cat-tools",
+    "french",
     "l10n",
     "i18n"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/EugeneAnt/mcp-server-sdlxliff"
+    "url": "https://github.com/AxelBogos/mcp-server-sdlxliff"
   },
-  "homepage": "https://github.com/EugeneAnt/mcp-server-sdlxliff",
-  "documentation": "https://github.com/EugeneAnt/mcp-server-sdlxliff#readme"
+  "homepage": "https://github.com/AxelBogos/mcp-server-sdlxliff",
+  "documentation": "https://github.com/AxelBogos/mcp-server-sdlxliff#readme"
 }

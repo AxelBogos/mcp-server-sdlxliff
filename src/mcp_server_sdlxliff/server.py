@@ -7,12 +7,10 @@ through the Model Context Protocol (MCP).
 
 import asyncio
 import json
-import os
 import sys
-import tempfile
 import traceback
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent, Resource
@@ -22,8 +20,12 @@ import logging
 from .cache import (
     get_parser,
     clear_parser_cache,
+    resolve_file_path,
     validate_file_extension,
 )
+from .parser import SDLXLIFFParser
+from . import versioning
+from .versioning import VersioningError
 from .qa import (
     run_qa_checks,
     QAReport,
@@ -35,39 +37,24 @@ from .qa import (
 from .languages import is_language_supported
 
 
-# Set up logging - try multiple locations for sandbox compatibility
 def setup_logging():
-    """Set up logging to multiple locations for debugging."""
-    log_locations = [
-        Path("/mnt/sdlxliff_debug.log"),  # Cowork sandbox mounted folder
-        Path.home() / "sdlxliff_debug.log",  # User home
-        Path(tempfile.gettempdir()) / "sdlxliff_mcp_server.log",  # Temp dir
-        Path("sdlxliff_debug.log"),  # Current working directory
-    ]
+    """
+    Set up logging to stderr only.
 
-    handlers = [logging.StreamHandler(sys.stderr)]  # Always log to stderr
-
-    for log_path in log_locations:
-        try:
-            handler = logging.FileHandler(str(log_path), mode='a')
-            handlers.append(handler)
-            break  # Use first writable location
-        except (PermissionError, OSError):
-            continue
-
+    No log files are ever written: translation content is client-confidential
+    and must not be persisted outside the user's working folder. Log messages
+    never include tool arguments or segment text.
+    """
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=handlers
+        handlers=[logging.StreamHandler(sys.stderr)],
     )
     return logging.getLogger("sdlxliff-server")
 
 
 logger = setup_logging()
-logger.info(f"=== MCP Server Starting ===")
-logger.info(f"CWD: {os.getcwd()}")
-logger.info(f"Python: {sys.executable}")
-logger.info(f"Platform: {sys.platform}")
+logger.info("=== MCP Server Starting ===")
 
 # Create the MCP server instance
 app = Server("sdlxliff-server")
@@ -166,15 +153,6 @@ async def list_tools() -> list[Tool]:
                         ),
                         "default": False,
                     },
-                    "for_indexing": {
-                        "type": "boolean",
-                        "description": (
-                            "Internal use only. When true, bypasses the 50-segment limit. "
-                            "Used by frontend for RAG indexing (segments go to vector store, not Claude context). "
-                            "Default: false."
-                        ),
-                        "default": False,
-                    },
                 },
                 "required": ["file_path"],
             },
@@ -248,7 +226,10 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Save changes made to an SDLXLIFF file. All modifications from "
                 "update_sdlxliff_segment are kept in memory until this tool is called. "
-                "Can optionally save to a different file path."
+                "Can optionally save to a different file path. "
+                "A snapshot of the file is kept automatically on every save, so any "
+                "earlier state can be reviewed or brought back later "
+                "(see list_file_history, diff_versions, restore_version)."
             ),
             inputSchema={
                 "type": "object",
@@ -324,9 +305,12 @@ async def list_tools() -> list[Tool]:
                 "Default checks: trailing punctuation mismatches, missing/extra numbers, "
                 "double spaces, whitespace mismatches, bracket mismatches, "
                 "inconsistent repetitions (same source text translated differently), "
-                "and terminology (glossary compliance). "
+                "terminology (glossary compliance), and french_typography (only when the "
+                "file's target language is French: non-breaking spaces before : ; ! ?, "
+                "« guillemets » instead of English quotes, French number formatting like "
+                "1 234,56; FR-FR vs FR-CA conventions via french_convention parameter). "
                 "OPT-IN checks: spelling (must be explicitly requested via checks parameter). "
-                "Spelling uses target language from file metadata; supports: en, de, es, fr, it, pt, ru, nl, lv, eu, fa, ar. "
+                "Spelling uses target language from file metadata; supports: en, de, es, fr, it, pt, nl (offline dictionaries, no network). "
                 "For terminology check: auto-discovers glossary.tsv/txt in same folder as SDLXLIFF, "
                 "or specify explicit glossary_path. "
                 "For spelling check: auto-discovers dictionary.txt/custom_words.txt/spelling.txt in same folder, "
@@ -363,6 +347,7 @@ async def list_tools() -> list[Tool]:
                                 "brackets",
                                 "inconsistent_repetitions",
                                 "terminology",
+                                "french_typography",
                                 "spelling",
                             ],
                         },
@@ -370,8 +355,22 @@ async def list_tools() -> list[Tool]:
                             "Optional list of specific checks to run. "
                             "If not provided, runs default checks (all except spelling). "
                             "Spelling is OPT-IN: must be explicitly listed to run. "
+                            "french_typography runs only when the file's target language is French. "
                             "Available: trailing_punctuation, numbers, double_spaces, "
-                            "whitespace, brackets, inconsistent_repetitions, terminology, spelling."
+                            "whitespace, brackets, inconsistent_repetitions, terminology, "
+                            "french_typography, spelling."
+                        ),
+                    },
+                    "french_convention": {
+                        "type": "string",
+                        "enum": ["fr-FR", "fr-CA"],
+                        "description": (
+                            "Typography convention for the french_typography check. "
+                            "fr-FR (France): non-breaking space before : ; ! ?. "
+                            "fr-CA (Canada/OQLF): non-breaking space before : only; "
+                            "no space before ; ! ?. "
+                            "Default: derived from the file's target language "
+                            "(fr-CA target uses Canadian rules, other French uses fr-FR)."
                         ),
                     },
                     "glossary_path": {
@@ -414,14 +413,144 @@ async def list_tools() -> list[Tool]:
                 "required": ["file_path"],
             },
         ),
+        Tool(
+            name="list_file_history",
+            description=(
+                "Show the saved versions of an SDLXLIFF file. A snapshot is kept "
+                "automatically every time the file is saved, so earlier states can "
+                "always be reviewed or brought back - nothing is ever lost. "
+                "Returns a dated list of versions (oldest first) with a summary of "
+                "what changed in each. All history stays on this computer only. "
+                "Use for: 'show the history of this file', 'what versions are there', "
+                "'when was this file last saved'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the SDLXLIFF file",
+                    },
+                },
+                "required": ["file_path"],
+            },
+        ),
+        Tool(
+            name="diff_versions",
+            description=(
+                "Compare a saved version of an SDLXLIFF file with its current "
+                "content, translation by translation. For each changed segment, "
+                "shows the segment ID, the translation as it was in that version, "
+                "and the translation as it is now (readable text, not raw XML). "
+                "Use list_file_history first to see the available version numbers. "
+                "Use for: 'what changed since version 2', 'what did my last save "
+                "change', 'review my edits'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the SDLXLIFF file",
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": (
+                            "Version number to compare against the current file "
+                            "(from list_file_history; 1 is the oldest)"
+                        ),
+                    },
+                },
+                "required": ["file_path", "version"],
+            },
+        ),
+        Tool(
+            name="restore_version",
+            description=(
+                "Bring back an earlier version of an SDLXLIFF file, replacing its "
+                "current content in one step. The current state is snapshotted "
+                "first, so a restore can itself be undone the same way - nothing is "
+                "ever lost. To undo the most recent save, restore the version just "
+                "before it (see list_file_history). "
+                "Use for: 'undo my last save', 'go back to yesterday's version', "
+                "'restore version 3'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the SDLXLIFF file",
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": (
+                            "Version number to restore "
+                            "(from list_file_history; 1 is the oldest)"
+                        ),
+                    },
+                },
+                "required": ["file_path", "version"],
+            },
+        ),
     ]
+
+
+def _language_pair_suffix(metadata: dict) -> str:
+    """Build a language-pair suffix like ' (EN→FR)' from file metadata."""
+    source = metadata.get('source_language')
+    target = metadata.get('target_language')
+    if not source or not target:
+        return ""
+    return f" ({source.split('-')[0].upper()}→{target.split('-')[0].upper()})"
+
+
+def _diff_segment_lists(old_segments: list, new_segments: list) -> list:
+    """
+    Compute a segment-level diff between two versions of a file.
+
+    Returns a list of {segment_id, old_target, new_target} for every segment
+    whose target text differs, in current-file order.
+    """
+    old_map = {seg['segment_id']: seg for seg in old_segments}
+    new_ids = set()
+    changes = []
+
+    for seg in new_segments:
+        seg_id = seg['segment_id']
+        new_ids.add(seg_id)
+        old_seg = old_map.get(seg_id)
+        if old_seg is None:
+            changes.append({
+                'segment_id': seg_id,
+                'old_target': None,
+                'new_target': seg.get('target', ''),
+            })
+        elif old_seg.get('target', '') != seg.get('target', ''):
+            changes.append({
+                'segment_id': seg_id,
+                'old_target': old_seg.get('target', ''),
+                'new_target': seg.get('target', ''),
+            })
+
+    # Segments that existed in the old version but are gone now (rare)
+    for seg in old_segments:
+        if seg['segment_id'] not in new_ids:
+            changes.append({
+                'segment_id': seg['segment_id'],
+                'old_target': seg.get('target', ''),
+                'new_target': None,
+            })
+
+    return changes
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     """Handle tool calls."""
 
-    logger.info(f"call_tool: {name} with arguments: {arguments}")
+    # Log only the tool name - arguments contain file paths and client text
+    logger.info(f"call_tool: {name}")
 
     try:
         if name == "read_sdlxliff":
@@ -431,9 +560,6 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             limit = arguments.get("limit")  # None means all
             max_percent = arguments.get("max_percent")  # None means no filtering
             skip_cm = arguments.get("skip_cm", False)  # Skip Context Matches
-            for_indexing = arguments.get("for_indexing", False)  # Bypass limit for RAG indexing
-            logger.info(f"read_sdlxliff: file_path={file_path}, include_tags={include_tags}, offset={offset}, limit={limit}, max_percent={max_percent}, skip_cm={skip_cm}, for_indexing={for_indexing}")
-            logger.info(f"CWD: {os.getcwd()}")
 
             parser = get_parser(file_path)
             all_segments = parser.extract_segments()
@@ -457,17 +583,9 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             logger.info(f"Extracted {total_count} segments")
 
             # Enforce maximum limit to prevent token overflow
-            # Skip limit cap when for_indexing=True (RAG indexing goes to vector store, not Claude context)
             MAX_SEGMENTS_PER_REQUEST = 50
-            if not for_indexing:
-                if limit is None or limit > MAX_SEGMENTS_PER_REQUEST:
-                    limit = MAX_SEGMENTS_PER_REQUEST
-                    logger.info(f"Limit capped to {MAX_SEGMENTS_PER_REQUEST} segments")
-            else:
-                # For indexing: use requested limit or all segments
-                if limit is None:
-                    limit = len(all_segments)
-                logger.info(f"For indexing: returning up to {limit} segments (no cap)")
+            if limit is None or limit > MAX_SEGMENTS_PER_REQUEST:
+                limit = MAX_SEGMENTS_PER_REQUEST
 
             # Apply pagination
             segments = all_segments[offset:offset + limit]
@@ -572,16 +690,122 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 validate_file_extension(output_path)
 
             parser = get_parser(file_path)
+            n_modified = len(parser.modified_segment_ids)
+            lang_suffix = _language_pair_suffix(parser.get_file_metadata())
+
+            save_location = Path(output_path).resolve() if output_path else parser.file_path
+            history_warnings = []
+
+            # Snapshot the file's current on-disk state before overwriting it
+            warning = versioning.ensure_baseline(save_location)
+            if warning:
+                history_warnings.append(warning)
+
             parser.save(output_path)
+
+            # Snapshot the newly saved state
+            seg_word = "segment" if n_modified == 1 else "segments"
+            warning = versioning.record_save(
+                save_location,
+                f"Updated {n_modified} {seg_word} in {save_location.name}{lang_suffix}",
+            )
+            if warning:
+                history_warnings.append(warning)
 
             # Clear cache after saving
             clear_parser_cache(file_path)
 
-            save_location = output_path if output_path else file_path
+            message = f"Successfully saved SDLXLIFF file to: {save_location}"
+            if history_warnings:
+                message += "\nNote: " + " ".join(history_warnings)
+            else:
+                message += "\nA snapshot of this version was kept automatically (see list_file_history)."
             return [
                 TextContent(
                     type="text",
-                    text=f"Successfully saved SDLXLIFF file to: {save_location}",
+                    text=message,
+                )
+            ]
+
+        elif name == "list_file_history":
+            file_path = str(resolve_file_path(arguments["file_path"]))
+
+            try:
+                versions = versioning.get_history(Path(file_path))
+            except VersioningError as e:
+                return [TextContent(type="text", text=str(e))]
+
+            response = {
+                "file": file_path,
+                "versions": [
+                    {
+                        "version": v.number,
+                        "date": v.date,
+                        "description": v.description,
+                    }
+                    for v in versions
+                ],
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(response, indent=2, ensure_ascii=False),
+                )
+            ]
+
+        elif name == "diff_versions":
+            file_path = str(resolve_file_path(arguments["file_path"]))
+            version = arguments["version"]
+
+            try:
+                versions = versioning.get_history(Path(file_path))
+                old_content = versioning.get_version_content(Path(file_path), version)
+            except VersioningError as e:
+                return [TextContent(type="text", text=str(e))]
+
+            version_info = next(v for v in versions if v.number == version)
+            old_parser = SDLXLIFFParser.from_bytes(old_content, name=file_path)
+            old_segments = old_parser.extract_segments()
+            new_segments = get_parser(file_path).extract_segments()
+
+            changes = _diff_segment_lists(old_segments, new_segments)
+
+            response = {
+                "file": file_path,
+                "compared_to_version": version,
+                "version_date": version_info.date,
+                "version_description": version_info.description,
+                "segments_changed": len(changes),
+                "changes": changes,
+            }
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(response, indent=2, ensure_ascii=False),
+                )
+            ]
+
+        elif name == "restore_version":
+            file_path = str(resolve_file_path(arguments["file_path"]))
+            version = arguments["version"]
+
+            try:
+                restored = versioning.restore_version(Path(file_path), version)
+            except VersioningError as e:
+                return [TextContent(type="text", text=str(e))]
+
+            # The file on disk changed; drop any cached parser
+            clear_parser_cache(file_path)
+
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Restored {Path(file_path).name} to version {restored.number} "
+                        f"from {restored.date} ({restored.description}). "
+                        f"The previous state was kept as a new version, so this "
+                        f"can be undone with restore_version if needed."
+                    ),
                 )
             ]
 
@@ -624,6 +848,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             checks = arguments.get("checks")
             glossary_path = arguments.get("glossary_path")
             dictionary_path = arguments.get("dictionary_path")
+            french_convention = arguments.get("french_convention")
             max_percent = arguments.get("max_percent")
             skip_cm = arguments.get("skip_cm", False)
 
@@ -703,6 +928,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 glossary_terms,
                 target_lang=target_lang,
                 custom_words=custom_words,
+                french_convention=french_convention,
             )
 
             # Convert to JSON-serializable format

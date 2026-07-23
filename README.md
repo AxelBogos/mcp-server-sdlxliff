@@ -1,17 +1,12 @@
-# mcp-server-sdlxliff
+# sdlxliff-translator-fr
 
 **Chat with your SDL Trados translation files using Claude.**
 
-Review translations, find errors, and make corrections through simple natural conversation - no manual XML editing required.
+Review translations, find errors, and make corrections through simple natural conversation - no manual XML editing required. Built for English→French translation workflows: French typography QA (FR-FR and FR-CA), offline-only spellchecking, and an invisible local version history with one-step undo.
 
-## Two Ways to Use
+Everything runs on your machine: this extension makes **no network calls** and your files and their history **never leave your computer**.
 
-| Option | Best For | Claude Access |
-|--------|----------|---------------|
-| **[XLIFF Chat Desktop App](#xliff-chat-desktop-app)** | Professional users who want a dedicated app | API key (pay per use) |
-| **[Claude Desktop Extension](#claude-desktop-extension)** | Claude Pro/Team subscribers | Claude subscription |
-
-Both options use the same MCP server under the hood - choose based on how you prefer to access Claude.
+> Forked and reworked from [EugeneAnt/mcp-server-sdlxliff](https://github.com/EugeneAnt/mcp-server-sdlxliff).
 
 ## What You Can Do
 
@@ -26,37 +21,6 @@ Just ask Claude in plain language:
 
 Claude reads your SDLXLIFF files, understands the translation context, and can make corrections while preserving all formatting tags automatically.
 
-## XLIFF Chat Desktop App
-
-A standalone macOS app with a native file picker - no command line required.
-
-### Installation
-
-1. Install the MCP server **globally** (not in a virtual environment):
-   ```bash
-   pip3 install mcp-server-sdlxliff
-   ```
-
-   > **Note:** The desktop app looks for Python at `/opt/homebrew/bin/python3` (Apple Silicon) or `/usr/local/bin/python3` (Intel Mac). Make sure to install with the same `pip3` that corresponds to your Homebrew Python.
-
-2. Download `XLIFF Chat_1.1.0_aarch64.dmg` from [Releases](https://github.com/EugeneAnt/mcp-server-sdlxliff/releases)
-
-3. Open the `.dmg` and drag XLIFF Chat to your Applications folder
-
-4. Launch XLIFF Chat and enter your [Anthropic API key](https://console.anthropic.com/)
-
-### Usage
-
-1. Click **File** or **Folder** button to select SDLXLIFF files
-2. The MCP server connects automatically
-3. Start chatting - ask Claude to review, check, or edit your translations
-
-### Requirements
-
-- macOS 10.15 or later
-- Python 3.10+ with `mcp-server-sdlxliff` installed globally
-- Anthropic API key
-
 ## Claude Desktop Extension
 
 Use with your Claude Pro or Team subscription through Claude Cowork.
@@ -65,7 +29,7 @@ Use with your Claude Pro or Team subscription through Claude Cowork.
 
 **Option A: Desktop Extension (Recommended)**
 
-1. Download `mcp-server-sdlxliff-1.1.0.mcpb` from [Releases](https://github.com/EugeneAnt/mcp-server-sdlxliff/releases)
+1. Download `sdlxliff-translator-fr-X.X.X.mcpb` from [Releases](https://github.com/AxelBogos/mcp-server-sdlxliff/releases) (or build it yourself, see [Development](#development))
 2. Open Claude Desktop → Settings → Extensions
 3. Click "Install Extension" and select the downloaded `.mcpb` file
 4. The extension installs automatically (Python and dependencies are managed for you)
@@ -114,6 +78,7 @@ Then add to your `claude_desktop_config.json`:
 - **Safe corrections** - Edit translations while preserving all formatting tags
 - **Batch review** - Process large files with automatic pagination
 - **Change tracking** - Modified segments are marked as `RejectedTranslation` for easy review in Trados
+- **Invisible version history** - Every save keeps a local snapshot automatically; review what changed or undo a save at any time. History is stored in a hidden folder next to your files and **never leaves your machine** (no remotes, no uploads - pure-Python [dulwich](https://www.dulwich.io/), no git installation required)
 
 ## Human in the Loop
 
@@ -198,11 +163,34 @@ Pre-validate proposed changes to a segment before updating.
 
 ### `save_sdlxliff`
 
-Save changes to the SDLXLIFF file.
+Save changes to the SDLXLIFF file. A snapshot of the file is kept automatically on every save (see version history tools below).
 
 **Parameters:**
 - `file_path` (string, required): Path to the SDLXLIFF file
 - `output_path` (string, optional): Alternative output path (default: overwrites original)
+
+### `list_file_history`
+
+Show the saved versions of a file - a dated list (oldest first, version 1 = original) with a summary of what changed in each. History is recorded automatically on every save and stays on the local machine only.
+
+**Parameters:**
+- `file_path` (string, required): Path to the SDLXLIFF file
+
+### `diff_versions`
+
+Compare a saved version with the file's current content, segment by segment. Returns `segment_id`, `old_target`, and `new_target` for every changed segment (readable text, not raw XML).
+
+**Parameters:**
+- `file_path` (string, required): Path to the SDLXLIFF file
+- `version` (integer, required): Version number from `list_file_history`
+
+### `restore_version`
+
+Bring back an earlier version of the file in one step ("undo my last save"). The current state is snapshotted first, so a restore can itself be undone.
+
+**Parameters:**
+- `file_path` (string, required): Path to the SDLXLIFF file
+- `version` (integer, required): Version number from `list_file_history`
 
 ### `get_sdlxliff_statistics`
 
@@ -237,14 +225,33 @@ Run quality assurance checks on the translation file.
 | `brackets` | Different count of `()[]{}` between source and target | Yes |
 | `inconsistent_repetitions` | Segments with same source text have different translations | Yes |
 | `terminology` | Glossary terms from source must appear in target (requires glossary file) | Yes |
+| `french_typography` | French typography conventions (see below). Runs only when the file's target language is French | Yes |
 | `spelling` | Spellcheck target text using target language from file metadata | **No** (opt-in) |
+
+**French typography check (`french_typography`):**
+
+Verifies, in target text only:
+- A **non-breaking space** (U+00A0) or **narrow non-breaking space** (U+202F) before two-part punctuation `:` `;` `!` `?` (breaking spaces and missing spaces are both flagged)
+- **French guillemets** `« … »` with non-breaking spaces inside, instead of straight (`"`) or English curly (`“ ”`) quotes
+- **French number formatting**: non-breaking space as thousands separator and comma as decimal (`1 234,56`) - English-formatted numbers (`1,234.56`, `3.14`) are flagged
+
+Exceptions handled: times (`10:30`), URLs (`https://`), version numbers (`2.5.1`) are not flagged.
+
+The `french_convention` parameter selects the regional convention:
+
+| Rule | `fr-FR` (France, default) | `fr-CA` (Canada, OQLF) |
+|------|---------------------------|------------------------|
+| Space before `:` | Non-breaking space required | Non-breaking space required (same) |
+| Space before `;` `!` `?` | (Narrow) non-breaking space required | **No space** (recommended); narrow non-breaking space tolerated; breaking space flagged |
+| Guillemets `« »` | Required with inner non-breaking spaces | Same |
+| Numbers `1 234,56` | Space thousands / comma decimal | Same |
+
+If `french_convention` is not given, it is derived from the file's target language: `fr-CA` uses Canadian rules, any other French variant uses `fr-FR` rules.
 
 **Spelling check:**
 - Must be explicitly requested: `checks: ["spelling"]` or `checks: ["spelling", "numbers", ...]`
-- Uses target language from SDLXLIFF metadata (e.g., `de-DE`, `ru-RU`)
-- Supported languages:
-  - **Russian, Ukrainian, English**: [Yandex.Speller](http://api.yandex.ru/speller/) (proper morphological dictionary)
-  - **German, Spanish, French, Italian, Portuguese, Dutch**: pyspellchecker
+- Uses target language from SDLXLIFF metadata (e.g., `fr-FR`, `de-DE`)
+- Supported languages: **English, German, Spanish, French, Italian, Portuguese, Dutch** (offline pyspellchecker dictionaries — no network access)
 - Unsupported languages are silently skipped (no false positives for rare languages)
 
 **Glossary file format:**
@@ -389,13 +396,13 @@ Claude Desktop Chat runs Claude in a **gVisor sandboxed container** for security
 └─────────────────────────────────────────┘
 ```
 
-**Workaround:** Use **Claude Cowork** or **XLIFF Chat** instead, which have direct access to your local files.
+**Workaround:** Use **Claude Cowork** instead, which has direct access to your local files.
 
 ## Development
 
 ```bash
 # Clone the repository
-git clone https://github.com/EugeneAnt/mcp-server-sdlxliff.git
+git clone https://github.com/AxelBogos/mcp-server-sdlxliff.git
 cd mcp-server-sdlxliff
 
 # Install with dev dependencies
@@ -421,24 +428,6 @@ mcpb pack .
 ```
 
 This creates `mcp-server-sdlxliff-X.X.X.mcpb` ready for installation in Claude Desktop.
-
-### Building the Desktop App
-
-```bash
-cd desktop
-
-# Install dependencies
-bun install
-
-# Build for macOS
-bun run tauri build
-```
-
-This creates `XLIFF Chat.dmg` in `desktop/src-tauri/target/release/bundle/dmg/`.
-
-## Acknowledgments
-
-- **Spelling check for Russian, Ukrainian, and English**: [Yandex.Speller](http://api.yandex.ru/speller/)
 
 ## License
 

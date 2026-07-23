@@ -61,8 +61,7 @@ sdlxliff_debug.log
 .DS_Store
 Thumbs.db
 
-# Desktop app (separate distribution)
-desktop/
+# Internal AI notes
 ai/
 
 # MCPB artifacts

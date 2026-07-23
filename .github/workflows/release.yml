@@ -1,0 +1,55 @@
+name: Release
+
+# Builds the .mcpb extension bundle and attaches it to a GitHub Release
+# whenever a version tag (v*) is pushed, e.g.:
+#   git tag v2.0.0 && git push origin v2.0.0
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run tests
+        run: |
+          uv sync --extra dev
+          uv run pytest -q
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check tag matches manifest version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST_VERSION="$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")"
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Tag version $TAG_VERSION does not match manifest.json version $MANIFEST_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Validate manifest and build bundle
+        run: |
+          npx --yes @anthropic-ai/mcpb validate manifest.json
+          npx --yes @anthropic-ai/mcpb pack . "sdlxliff-translator-fr-${GITHUB_REF_NAME#v}.mcpb"
+
+      - name: Create GitHub Release with bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "sdlxliff-translator-fr $GITHUB_REF_NAME" \
+            --generate-notes \
+            sdlxliff-translator-fr-*.mcpb

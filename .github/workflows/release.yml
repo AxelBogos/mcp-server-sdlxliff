@@ -1,0 +1,68 @@
+name: Release
+
+# Builds the .mcpb extension bundle and attaches it to a GitHub Release
+# whenever a version tag (v*) is pushed, e.g.:
+#   git tag v2.0.0 && git push origin v2.0.0
+# Can also be run manually (workflow_dispatch) with a tag name, in which
+# case the tag is created on the selected ref as part of the release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v2.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run tests
+        run: |
+          uv sync --extra dev
+          uv run pytest -q
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check tag matches manifest version
+        run: |
+          TAG_VERSION="${RELEASE_TAG#v}"
+          MANIFEST_VERSION="$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")"
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Tag version $TAG_VERSION does not match manifest.json version $MANIFEST_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Validate manifest and build bundle
+        run: |
+          npx --yes @anthropic-ai/mcpb validate manifest.json
+          npx --yes @anthropic-ai/mcpb pack . "sdlxliff-translator-fr-${RELEASE_TAG#v}.mcpb"
+
+      - name: Create GitHub Release with bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # --target creates the tag at the built commit when the tag
+          # does not exist yet (manual runs); no-op when the tag exists
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "sdlxliff-translator-fr $RELEASE_TAG" \
+            --generate-notes \
+            sdlxliff-translator-fr-*.mcpb
